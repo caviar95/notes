@@ -978,3 +978,161 @@ Timing sketch (per drop event):
 本文档为工程级模板，旨在帮助集成工程师或系统设计者快速搭建或评估光源舱内的源控制器架构与实时闭环。您可以把本文件作为基础，在其中替换具体传感器型号、接口与参数后，用于系统设计评审或招标资料。
 
 如果需要：我可以把关键示意图导出为 PDF 或 SVG（便于放入设计文档），或者把传感器选型表扩展为带厂商/型号建议的 Excel 表格。
+
+下面为您系统介绍**光源舱（以 ASML/Cymer LPP 光源为参照）中使用 RGA（残余气体分析仪，Residual Gas Analyzer）进行检测**的原理、目标气种、安装/取样策略、工作模式、与光源控制的联动、校准与维护建议，以及工程注意点和常见陷阱。文末我会给出一份可直接拿去实现的工程清单（安装位置、监测通道 m/z、建议阈值与响应动作模板）。
+
+---
+
+# 1 概述 — RGA 在 EUV 光源舱里的角色
+
+RGA 本质上是一个用于真空腔体内气体成分分析的质谱仪（常见为四极杆型），能在真空条件下识别并半定量各类分子/原子（以质量电荷比 m/z 表示）。在 LPP-EUV 光源中，RGA 的主要用途是：
+
+* 监测进/排气与腔体内的残留气体（O₂、H₂O、N₂/空气泄漏等）以保护多层膜镜面；([pfeiffer-vacuum.com][1])
+* 追踪工艺相关或异常气体（氢气 H₂、惰性气体 Ar、碳氢化合物等）以保证气路/冲洗质量；([Hiden Analytical][2])
+* 在长期或突发事件中识别 Sn 相关蒸汽/团簇的增加（Sn 单原子或 SnOx 断片），用于污染/沉积诊断与维护决策（注：RGA 对瞬态、强度极低的等离子体脉冲信号不如 OES 敏感，但对慢变或趋势监测非常有效）。([ResearchGate][3], [Cymer][4])
+
+（要点：RGA 擅长“成分/趋势/泄漏定位”，但不是单独用于纳秒级等离子体瞬态诊断的工具，通常与 OES、EUV PD、相机等联用。）
+
+---
+
+# 2 典型要监测的物种（与对应 m/z）
+
+建议在光源舱/采样线上至少对以下 m/z 进行持续跟踪（可用 SIM/Peak-hold 更高频率采样关键通道）：
+
+* **H₂**：m/z = 2（氢气） — 氢冲洗状态、安全与气氛控制。
+* **He / Ar**：m/z = 4 / 40 — 惰性气体供给或泄露监测（若使用 Ar）。
+* **H₂O**：m/z = 18（以及 17、16 的碎片） — 湿气/泄露/泵中水分。
+* **N₂ / CO / CO₂ / O₂**：m/z = 28 / 28/44 / 32 — 空气泄漏指示（氧与氮、CO₂）。
+* **烃类 / HC（有机污染）**：m/z = 15–100（常观察 15, 16, 27, 43, 57 等片段） — 真空腔残油、泵油回流或外来污染。
+* **锡（Sn）及其断片/同位素**：m/z ≈ 112–120（Sn 同位素群）以及可能的氧化物/簇（更高 m/z）。检测 Sn 是诊断光源腔或集光器受污染的重要指标，但 Sn 往往以簇或上述高 m/z 出现，碎片化会产生多重峰位，需结合谱库判读。([ResearchGate][3], [Ideal Vacuum][5])
+
+> 注：RGA 读数为 m/z 峰点电流或部分压力，需要用校正因子（sensitivity or fragmentation factors）转换为物种绝对分压/浓度。详见后文“校准”。
+
+来源说明/示例：RGA 在真空诊断与泄漏/污染监测的工业实践有大量应用，厂商资料与指南说明了常见 m/z 与解释方法。([lesker.com][6], [pfeiffer-vacuum.com][1])
+
+---
+
+# 3 安装与取样策略（工程实现要点）
+
+RGA 在光源舱的有效性高度依赖取样点、取样通道设计与差压/加热策略。关键建议：
+
+1. **取样点选择（多点）**
+
+   * 在**滴腔/等离子体近区**设采样口（如果工艺允许）用于捕捉靶材气化相关的长期累积信号；但要防止直接暴露 RGA 探头到高能粒子。
+   * 在**集光镜/IF 近旁**设代表性监测口（用于镜面污染趋势）。
+   * 在**气体供给与排气回路**（MFC 下游、泵旁）安装 RGA 以判断进气纯度与泵回流污染。
+   * 工程上常至少布置 2 个 RGA/采样口（源腔代表位置 + 泵/排气口），便于定位污染源。([pfeiffer-vacuum.com][1])
+
+2. **差动取样与分压管理**
+
+   * 为避免 RGA 射频/探头在低压区失效，常用**采样孔/毛细管 + 差速泵/节流**把少量气体导入 RGA 的分析腔（RGA 自带差压系统），或把 RGA 置于被抽室并使用门控采样阀。
+   * 对于可能冷凝（如 Sn）的物种，建议**加热取样管线**（防止冷凝沉积）并尽量缩短取样管长。([Ideal Vacuum][5])
+
+3. **保护措施**
+
+   * 在等离子体或高碎屑事件中，需用\*\*快关阀（fast valve）\*\*或副阱保护 RGA，避免高浓度 Sn/颗粒瞬间冲击探头（会损伤离子源/检测器）。多数工业系统把 RGA 置于“慢通路 + 快阀”拓扑以实现保护。([thinksrs.com][7])
+
+4. **采样频率与工作模式**
+
+   * 常规：慢扫模式（mass scan）用于谱图获取与趋势（0.1–1 Hz 全谱或更慢）。
+   * 关键通道：使用 **SIM（selected ion monitoring）/ peak-hold** 对关键 m/z（H₂, O₂/H₂O, Sn peaks）做高频采样（1–10 Hz 或更高，取决于 RGA 型号）以实现快速告警。部分现代 RGA 提供子秒级或更快的特定通道采样能力。([mks.com][8], [thinksrs.com][9])
+
+---
+
+# 4 工作模式与信号处理建议
+
+* **全谱扫描（Spectrum scan）**：周期性扫全 m/z（例如 1–300 amu）用以生成“真空指纹谱”，用于长期趋势和未知物识别。
+* **SIM / Peak-hold（快速监控）**：对少数关键 m/z 进行连续检测，响应速度快、信噪比高，适合联动 interlock。现代 RGA 可在 SIM 模式下达到每秒数十次到数百次的读数（具体见设备说明书）。([mks.com][8])
+* **事件触发采样（Snapshot）**：当 OES / 相机 / EUV PD 报警时，源控制器可指令 RGA 做“高分辨速拍”或短时连续扫描（若 RGA 支持）来获取故障时谱，用于事后分析。
+* **谱线解析注意点**：复杂分子会碎片化（fragmentation），同一 m/z 可由多种物种贡献（例如 m/z 28 可是 N₂ 或 CO），需结合上下游 m/z 和已知谱库做判别（见 RGA 谱库/校正方法）。([Indico][10], [Ideal Vacuum][5])
+
+---
+
+# 5 与光源控制器的联动（典型闭环与报警策略）
+
+RGA 数据分为“慢速趋势”与“快速告警”两类处理路径：
+
+1. **慢速趋势（上位机 / Source Controller，周期 0.1–60 s）**
+
+   * 用于判断气体纯度衰退、长时间的 Sn 增加趋势、泵油回流等；当趋势超过门限，触发维护流程或清洗。
+2. **快速告警（可由 SIM 模式触发，周期 1–10 Hz 或更快）**
+
+   * 针对关键 m/z（例如 O₂、H₂O、Sn peaks），当短时间内突增超过阈值，立即向 Source Controller 报警，Controller 执行策略：
+
+     * 保护优先：先降低/暂停光源输出、开启旋转箔、加强 H₂ 冲洗或直接断开激光（视风险等级）。
+     * 记录并快照：触发 RGA、OES 与相机的事件回放缓冲保存，用于事后分析。
+3. **多传感器确认逻辑（避免误报）**
+
+   * 由于 RGA 可能受抽气扰动等影响，建议把 RGA 告警与至少一个其他信号联合触发（例如 RGA Sn 峰 + QCM 沉积率上升 或 OES 中 Sn 发射线增强），然后再执行高优先级 interlock。这个策略已被工业系统采纳以避免频繁误停。([pfeiffer-vacuum.com][1], [Cymer][4])
+
+---
+
+# 6 校准、量程与灵敏度
+
+* **校准**：RGA 通常需用已知浓度的校准气体或标准气源做灵敏度校准。某些厂商/白皮书提供“气体修正因子（gas correction factors）”用来将离子電流换算为部分压力。校准应覆盖 H₂、O₂、H₂O、CO₂ 及常见烃类；Sn 的定量更复杂，需要专门的标准或通过见证片比对。([Ideal Vacuum][5])
+* **灵敏度与检测下限**：常规 RGA 灵敏度可到 10⁻⁹ — 10⁻¹¹ Torr 级别（取决于型号与设定）；但测量 Sn 大分子/簇时，灵敏度会受离子化效率与碎片影响而降低。选择时要确认厂家针对高 m/z（>100 amu）检测性能。([thinksrs.com][9], [Hiden Analytical][11])
+
+---
+
+# 7 典型工程问题与对策（实战经验）
+
+* **问题：Sn 冷凝堵管/损伤 RGA 探头**
+  对策：加热采样管、配置快关阀并定期清理/更换采样管道，或将 RGA 放在远端泵旁并通过短、加热管线取样。([Ideal Vacuum][5])
+* **问题：RGA 对瞬态信号（单脉冲等离子体）响应慢**
+  对策：RGA 与 OES/相机并联；把 RGA 作为慢速/趋势工具，瞬态由 OES/PD 负责。若需要更快的质量谱响应，可选用专用快质谱或 TIMS 技术（但成本与工程复杂度高）。([lesker.com][6], [Hiden Inc][12])
+* **问题：谱线重叠导致误判（例：m/z 28 为 N₂ 或 CO）**
+  对策：同时监测邻近 m/z（如 16、17、44）并结合工艺上下文判定，或用 RGA 的高分辨率/高质量谱仪（磁偏场或高端 quadrupole）。([Indico][10])
+
+---
+
+# 8 常用厂商与型号参考（供采购/选型时参考）
+
+* **Pfeiffer Vacuum** — RGA / OmniGrade 系列（工业级、可定制）。([pfeiffer-vacuum.com][1], [Blower & Vacuum Best Practices][13])
+* **MKS / e-Vision 系列** — 强调高速采样与半导体应用友好特性。([mks.com][8])
+* **Hiden / Hiden Analytical** — 提供高性能 RGA 与工业说明资料。([Hiden Analytical][11])
+* **SRS（Stanford Research Systems）** — 实验室/中小系统常用 RGA（性价比高）。([thinksrs.com][9])
+
+（选型时关注：最大 m/z 范围、最低检测限、SIM 速率、接口（Ethernet/RS-232/USB）、是否带加热采样线选项、是否支持外触发/快阀控制。）
+
+---
+
+# 9 推荐的工程清单（可直接落地）
+
+1. **RGA 布置**：至少 2 个采样口（源腔代表位 + 泵/排气口），采样管加热（≥100°C 可根据工况），快关阀保护。
+2. **采样策略**：默认慢扫（全谱）5–60 s 周期；对关键 m/z 开启 SIM（采样频率 1–10 Hz）；将 RGA 的告警与 OES / QCM 联合判定策略实现（至少 2 条确认）。
+3. **阈值建议（示例，需现场标定）**：
+
+   * O₂（m/z 32）：若背景上升 > 基线 + 5×σ 且持续 > 10 s → 触发低优先 interlock（降低功率并通知维护）。
+   * H₂O（m/z 18）：若短时突增×10 → 触发气路检查并记录（若伴随 PD 下降 → 保护）。
+   * Sn 群（m/z 112–120）：任一 Sn 峰短时突增 > 基线×5 → 触发保护（旋转箔 + 降功率），若同时 QCM 沉积率上升则进入维护流程。
+4. **联动动作**（优先级）：硬 interlock（安全门、氢泄漏）＞半硬 interlock（RGA+QCM+OES 确认）＞软告警（RGA 单一慢速漂移）。
+5. **维护/校准**：月度检查采样管与快阀；季度或按运行小时数用标准气做 RGA 灵敏度校准；记录并保存所有 RGA 全谱到数据库（便于趋势分析）。([Ideal Vacuum][5], [pfeiffer-vacuum.com][1])
+
+---
+
+# 10 小结（要点回顾）
+
+* RGA 是 EUV 光源腔体中**慢速/趋势**与**成分识别**的核心诊断工具，能有效识别泄露、进气污染、泵油回流及长期 Sn 沉积风险，但对纳秒级等离子体瞬态不敏感；因此应与 OES、EUV PD、相机等高速诊断并用。([pfeiffer-vacuum.com][1], [Cymer][4])
+* 好的工程实现依赖**多点取样、差动/加热采样线、快阀保护、SIM 快采样**与**多传感器确认逻辑**，并将 RGA 数据按慢/快路径分层处理用于保护与维护决策。([mks.com][8], [Ideal Vacuum][5])
+
+---
+
+如果您需要，我可以接着做两件事（任选其一或两项）：
+A) 把上面的“工程清单/阈值/联动流程”做成一页 PPT 或 PDF（含推荐信号流程图）；
+B) 给出一个**具体的 m/z 监测清单（CSV/Excel）**，包含建议报警阈值、建议采样频率和推荐 RGA 型号（按预算：实验室 / 工业 / 高端）。
+
+您想先要 A 还是 B？ or 两都要？
+
+[1]: https://www.pfeiffer-vacuum.com/us/en/products/analytical-instrumentation/residual-gas-analysis-systems/?utm_source=chatgpt.com "Residual Gas Analysis Systems (RGA) | Pfeiffer United States"
+[2]: https://www.hidenanalytical.com/blog/using-residual-gas-analysis-in-semiconductor-production/?utm_source=chatgpt.com "Using Residual Gas Analysis in Semiconductor Production"
+[3]: https://www.researchgate.net/figure/A-residual-gas-analyzer-RGA-spectrum-of-the-optic-zone-environment-Partial-pressure_fig3_260048513?utm_source=chatgpt.com "A residual gas analyzer (RGA) spectrum of the optic zone ..."
+[4]: https://www.cymer.com/wp-content/uploads/2018/12/Cymer_SPIE_AdvancedLithography_2012.pdf?utm_source=chatgpt.com "Advanced light source technologies that enable high- ..."
+[5]: https://www.idealvac.com/files/manuals/RGA_Library_Generation_White_Paper.pdf?srsltid=AfmBOooQ-S54ThwMTxu5yb67StC0F2ZIqZOkvfX5wpVr7B9fAjxwv9D5&utm_source=chatgpt.com "Quantitative Spectra Collection, Analysis, and Library ..."
+[6]: https://www.lesker.com/newweb/technical_info/vacuumtech/rga_03_simpleinterpret.cfm?utm_source=chatgpt.com "Simple RGA Spectra Interpretation"
+[7]: https://www.thinksrs.com/downloads/pdfs/applicationnotes/Vac_diag_RGA.pdf?utm_source=chatgpt.com "Vacuum Diagnosis with an RGA"
+[8]: https://www.mks.com/f/e-vision-2-residual-gas-analyzer?utm_source=chatgpt.com "e-Vision 2 General Purpose Residual Gas Analyzer"
+[9]: https://www.thinksrs.com/products/rga.htm?utm_source=chatgpt.com "Residual Gas Analyzer"
+[10]: https://indico.cern.ch/event/565314/contributions/2285748/attachments/1467497/2273709/RGA_tutorial-interpretation.pdf?utm_source=chatgpt.com "CAS tutorial on RGA Interpretation of RGA spectra"
+[11]: https://www.hidenanalytical.com/wp-content/uploads/2020/05/RGA_Series_Widescreen.pdf?utm_source=chatgpt.com "Mass Spectrometers for Residual Gas Analysis - RGA"
+[12]: https://hideninc.com/residual-gas-analysis/?utm_source=chatgpt.com "Residual Gas Analysis Mass Spectrometry"
+[13]: https://www.blowervacuumbestpractices.com/industry-news/pfeiffer-vacuum-offers-omnigrade-customized-rga-system?utm_source=chatgpt.com "Pfeiffer Vacuum Offers OmniGrade Customized RGA System"
